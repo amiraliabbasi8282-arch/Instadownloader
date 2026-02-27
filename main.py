@@ -1,75 +1,97 @@
 import os
-import instaloader
+import re
 import shutil
+import instaloader
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# دریافت توکن از متغیرهای محیطی Railway (امنیت بالا)
+# دریافت توکن از متغیرهای محیطی Railway
 TOKEN = os.getenv('BOT_TOKEN')
 
 # تنظیمات اینستالودر
 L = instaloader.Instaloader()
+L.save_metadata = False  # برای جلوگیری از دانلود فایل‌های متنی اضافه
+L.download_comments = False
 
 # دستور /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        'سلام! خوش آمدید. 🖐\n'
-        'لطفاً لینک پست اینستاگرام مورد نظرتون رو بفرستید تا براتون دانلود کنم.'
+        'سلام! به ربات دانلودر خوش آمدید. 🖐\n\n'
+        'فقط کافیه لینک پست یا Reels رو برای من بفرستی تا فایلش رو برات بفرستم.'
     )
 
 # پردازش لینک و دانلود
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text
     
-    # بررسی معتبر بودن لینک
     if "instagram.com" not in url:
         await update.message.reply_text('❌ لطفاً یک لینک معتبر از اینستاگرام بفرستید.')
         return
 
-    status_msg = await update.message.reply_text('⏳ در حال بررسی و دانلود... لطفاً کمی صبر کنید.')
+    status_msg = await update.message.reply_text('⏳ در حال بررسی لینک و استخراج ویدیو...')
 
     try:
-        # استخراج کد کوتاه پست (Shortcode) از لینک
-        # لینک‌ها معمولاً به این شکل هستند: instagram.com/p/SHORTCODE/
-        parts = url.split("/")
-        shortcode = parts[parts.index("p") + 1] if "p" in parts else parts[parts.index("reels") + 1] if "reels" in parts else None
-
-        if not shortcode:
-            await status_msg.edit_text("❌ نتونستم کد پست رو از لینک تشخیص بدم.")
+        # استخراج Shortcode با استفاده از Regex (هوشمند برای انواع لینک‌ها)
+        match = re.search(r"/(?:p|reels|reel|tv)/([A-Za-z0-9_-]+)", url)
+        
+        if not match:
+            await status_msg.edit_text("❌ متأسفانه نتونستم کد پست رو از این لینک تشخیص بدم. مطمئن شو که لینک رو درست کپی کردی.")
             return
+            
+        shortcode = match.group(1)
+        
+        # ایجاد یک پوشه موقت برای دانلود
+        download_path = f"dl_{shortcode}"
+        if not os.path.exists(download_path):
+            os.makedirs(download_path)
 
-        # دانلود پست در یک پوشه با نام همان کد
+        # دانلود محتوا
         post = instaloader.Post.from_shortcode(L.context, shortcode)
-        L.download_post(post, target=shortcode)
+        L.download_post(post, target=download_path)
 
-        # گشتن دنبال فایل‌های دانلود شده و ارسال آن‌ها
-        files = os.listdir(shortcode)
+        # ارسال فایل‌های دانلود شده
+        files = sorted(os.listdir(download_path))
+        found_content = False
+
         for file in files:
-            file_path = f"{shortcode}/{file}"
+            file_full_path = os.path.join(download_path, file)
             
             if file.endswith('.mp4'):
-                await update.message.reply_video(video=open(file_path, 'rb'), caption="خدمت شما! ✅")
+                with open(file_full_path, 'rb') as video:
+                    await update.message.reply_video(video=video, caption=f"✅ پست با کد {shortcode} دانلود شد.")
+                found_content = True
             elif file.endswith('.jpg'):
-                await update.message.reply_photo(photo=open(file_path, 'rb'))
+                # ارسال عکس فقط اگر ویدیو همراهش نباشد (برای جلوگیری از ارسال تکراری کاور ویدیو)
+                if not any(f.endswith('.mp4') for f in files):
+                    with open(file_full_path, 'rb') as photo:
+                        await update.message.reply_photo(photo=photo)
+                    found_content = True
 
-        # پاک کردن فایل‌ها از حافظه سرور Railway بعد از ارسال
-        shutil.rmtree(shortcode)
-        await status_msg.delete()
+        if not found_content:
+            await status_msg.edit_text("❌ فایلی برای ارسال پیدا نشد. ممکنه پست حذف شده باشه یا خصوصی باشه.")
+        else:
+            await status_msg.delete()
+
+        # پاکسازی پوشه دانلود
+        shutil.rmtree(download_path)
 
     except Exception as e:
         print(f"Error: {e}")
-        await status_msg.edit_text(f'❌ متأسفانه خطایی رخ داد. ممکنه پست خصوصی (Private) باشه یا اینستاگرام دسترسی رو محدود کرده باشه.')
+        error_text = str(e)
+        if "401" in error_text or "Login required" in error_text:
+            await status_msg.edit_text('❌ اینستاگرام اجازه دسترسی نداد. (احتمالاً پیج خصوصیه یا آی‌پی سرور محدود شده)')
+        else:
+            await status_msg.edit_text('❌ خطای غیرمنتظره‌ای رخ داد. لطفاً دوباره تلاش کنید.')
 
-# اجرای ربات
+# اجرای اصلی ربات
 if __name__ == '__main__':
     if not TOKEN:
-        print("خطا: مقدار BOT_TOKEN در Railway تنظیم نشده است!")
+        print("Error: BOT_TOKEN variable is not set in Railway!")
     else:
         app = Application.builder().token(TOKEN).build()
         
-        # اضافه کردن هندلرها
         app.add_handler(CommandHandler("start", start))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
-        print("Bot is running...")
+        print("Bot is up and running...")
         app.run_polling()
