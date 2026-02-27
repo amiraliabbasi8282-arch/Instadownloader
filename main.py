@@ -7,12 +7,12 @@ import subprocess
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# --- تنظیمات متغیرها ---
+# --- تنظیمات متغیرها از Railway ---
 TOKEN = os.getenv('BOT_TOKEN')
 INSTA_USER = os.getenv('INSTA_USER')
 INSTA_PASS = os.getenv('INSTA_PASS')
 
-# تنظیمات اینستاگرام
+# تنظیمات اینستاگرام با مدیریت لاگین
 L = instaloader.Instaloader()
 if INSTA_USER and INSTA_PASS:
     try:
@@ -21,12 +21,10 @@ if INSTA_USER and INSTA_PASS:
     except Exception as e:
         print(f"⚠️ Instagram Login Failed: {e}")
 
-# تابع پیدا کردن مسیر FFmpeg در سرور Railway
+# تابع پیدا کردن مسیر FFmpeg در سرور
 def get_ffmpeg_path():
     try:
-        # جستجو برای پیدا کردن مسیر نصب شده FFmpeg
-        path = subprocess.check_output(['which', 'ffmpeg']).decode('utf-8').strip()
-        return path
+        return subprocess.check_output(['which', 'ffmpeg']).decode('utf-8').strip()
     except:
         return None
 
@@ -35,12 +33,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text
+    if not url.startswith("http"):
+        return
+
     status_msg = await update.message.reply_text('⏳ در حال پردازش... لطفاً صبور باشید.')
 
     # ۱. بخش اینستاگرام
     if "instagram.com" in url:
         try:
             match = re.search(r"/(?:p|reels|reel|tv)/([A-Za-z0-9_-]+)", url)
+            if not match:
+                await status_msg.edit_text("❌ لینک اینستاگرام معتبر نیست.")
+                return
+            
             shortcode = match.group(1)
             download_path = f"insta_{shortcode}"
             post = instaloader.Post.from_shortcode(L.context, shortcode)
@@ -59,12 +64,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text(f"❌ خطای اینستاگرام: {str(e)[:50]}")
 
     # ۲. بخش اسپاتیفای و تیک‌تاک
-    elif "tiktok.com" in url or "spotify.com" in url or "spotify.com" in url:
+    elif "tiktok.com" in url or "spotify.com" in url or "spotify.link" in url:
         is_spotify = "spotify" in url
         ffmpeg_path = get_ffmpeg_path()
         
         ydl_opts = {
-            'outtmpl': 'downloaded_file.%(ext)s',
+            'outtmpl': 'dl_%(title)s.%(ext)s',
             'quiet': True,
             'no_warnings': True,
         }
@@ -83,39 +88,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-            
-            ext = 'mp3' if is_spotify else 'mp4'
-            final_file = f'downloaded_file.{ext}'
-
-            # ارسال فایل به کاربر
-            if os.path.exists(final_file):
+                info = ydl.extract_info(url, download=True)
+                filename = ydl.prepare_filename(info)
                 if is_spotify:
-                    await update.message.reply_audio(audio=open(final_file, 'rb'), caption="آهنگ اسپاتیفای شما آماده است 🎵")
-                else:
-                    await update.message.reply_video(video=open(final_file, 'rb'), caption="ویدیو تیک‌تاک شما آماده است ✅")
-                os.remove(final_file)
-            else:
-                # اگر فایل پیدا نشد اما دانلود موفق بود (تغییر نام احتمالی توسط yt-dlp)
-                for f in os.listdir('.'):
-                    if f.startswith('downloaded_file'):
-                        await update.message.reply_document(document=open(f, 'rb'))
-                        os.remove(f)
+                    filename = filename.rsplit('.', 1)[0] + '.mp3'
 
+            if os.path.exists(filename):
+                if is_spotify:
+                    await update.message.reply_audio(audio=open(filename, 'rb'), caption="🎵 دانلود شده از اسپاتیفای")
+                else:
+                    await update.message.reply_video(video=open(filename, 'rb'), caption="✅ دانلود شده از تیک‌تاک")
+                os.remove(filename)
             await status_msg.delete()
         except Exception as e:
-            await status_msg.edit_text(f"❌ خطا: FFmpeg روی سرور یافت نشد یا لینک معتبر نیست.")
-            print(f"Download Error: {e}")
-
+            await status_msg.edit_text("❌ خطا در دانلود. احتمالاً FFmpeg نصب نیست یا لینک مشکل دارد.")
+            print(f"Error: {e}")
     else:
         await status_msg.edit_text("❌ این لینک پشتیبانی نمی‌شود.")
 
 if __name__ == '__main__':
     if not TOKEN:
-        print("❌ Error: BOT_TOKEN is not set in Variables!")
+        print("❌ Error: BOT_TOKEN is missing!")
     else:
         app = Application.builder().token(TOKEN).build()
         app.add_handler(CommandHandler("start", start))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        print("🚀 Bot is running and waiting for links...")
+        print("🚀 Bot is running...")
         app.run_polling(drop_pending_updates=True)
