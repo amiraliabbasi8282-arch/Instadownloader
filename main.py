@@ -20,78 +20,93 @@ def get_ffmpeg_path():
     except: return None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text('🚀 ربات همه‌کاره آماده است!\nلینک یوتیوب، اسپاتیفای، اینستاگرام یا ساوندکلود بفرست.')
+    await update.message.reply_text('🚀 ربات همه‌کاره دانلودر آماده است!\n\n🔹 لینک (یوتیوب، اینستا، اسپاتیفای و...)\n🔹 یا اسم آهنگ (مثلاً: ابی پوست شیر)\nرو بفرست برات دانلود کنم.')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text
-    if not url.startswith("http"): return
-
-    if "youtube.com" in url or "youtu.be" in url:
-        keyboard = [[InlineKeyboardButton("🎬 ویدیو", callback_data=f"yt_list|{url}"),
-                     InlineKeyboardButton("🎵 آهنگ", callback_data=f"yt_audio|{url}")]]
+    text = update.message.text
+    ffmpeg_path = get_ffmpeg_path()
+    
+    # تشخیص یوتیوب
+    if "youtube.com" in text or "youtu.be" in text:
+        keyboard = [[InlineKeyboardButton("🎬 ویدیو", callback_data=f"yt_list|{text}"),
+                     InlineKeyboardButton("🎵 آهنگ", callback_data=f"yt_audio|{text}")]]
         await update.message.reply_text("چه فرمتی مد نظرت هست؟", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
-    status_msg = await update.message.reply_text('⏳ در حال پردازش...')
-    ffmpeg_path = get_ffmpeg_path()
+    status_msg = await update.message.reply_text('⏳ در حال جستجو و پردازش...')
 
-    # مدیریت اسپاتیفای و ساوندکلود
-    is_music = any(x in url for x in ["spotify", "soundcloud"])
-    
-    if is_music:
-        query = f"ytsearch1:{url}" if "spotify" in url else url
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': 'music_%(title)s.%(ext)s',
-            'writethumbnail': True,
-            'quiet': True,
-            'ffmpeg_location': ffmpeg_path,
-            'postprocessors': [
-                {'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'},
-                {'key': 'FFmpegMetadata'},
-                {'key': 'EmbedThumbnail'}
-            ],
-        }
-        
+    # تشخیص اینستاگرام
+    if "instagram.com" in text:
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(query, download=True)
+            match = re.search(r"/(?:p|reels|reel|tv)/([A-Za-z0-9_-]+)", text)
+            shortcode = match.group(1)
+            L = instaloader.Instaloader()
+            if INSTA_USER and INSTA_PASS: L.login(INSTA_USER, INSTA_PASS)
+            post = instaloader.Post.from_shortcode(L.context, shortcode)
+            target = f"insta_{shortcode}"
+            L.download_post(post, target=target)
+            for f in os.listdir(target):
+                p = os.path.join(target, f)
+                if f.endswith('.mp4'): await update.message.reply_video(video=open(p, 'rb'))
+                elif f.endswith('.jpg') and not any(x.endswith('.mp4') for x in os.listdir(target)):
+                    await update.message.reply_photo(photo=open(p, 'rb'))
+            shutil.rmtree(target)
+            await status_msg.delete()
+            return
+        except: return await status_msg.edit_text("❌ خطا در اینستاگرام")
+
+    # بخش موزیک (لینک اسپاتیفای/ساوندکلود یا جستجوی نام آهنگ)
+    is_link = text.startswith("http")
+    query = f"ytsearch1:{text}" if not is_link or "spotify" in text else text
+    
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': 'music_%(title)s.%(ext)s',
+        'writethumbnail': True,
+        'quiet': True,
+        'ffmpeg_location': ffmpeg_path,
+        'postprocessors': [
+            {'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'},
+            {'key': 'FFmpegMetadata'},
+            {'key': 'EmbedThumbnail'}
+        ],
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(query, download=True)
+            if 'entries' in info:
+                if not info['entries']:
+                    return await status_msg.edit_text("❌ متاسفانه آهنگی پیدا نشد.")
+                info = info['entries'][0]
+
+            fname = ydl.prepare_filename(info).rsplit('.', 1)[0] + '.mp3'
+            
+            # پیدا کردن تصویر کاور
+            thumbnail = None
+            for f in os.listdir('.'):
+                if f.endswith(('.jpg', '.webp', '.png')) and not f.startswith('music_'):
+                    thumbnail = f; break
+
+            if os.path.exists(fname):
+                title = info.get('title', 'Unknown')
+                artist = info.get('uploader', 'Unknown')
+                caption = f"🎵 **Song:** {title}\n👤 **Artist:** {artist}"
                 
-                # رفع ارور list index out of range
-                if 'entries' in info:
-                    if not info['entries']:
-                        return await status_msg.edit_text("❌ متاسفانه این آهنگ پیدا نشد.")
-                    info = info['entries'][0]
-
-                fname = ydl.prepare_filename(info).rsplit('.', 1)[0] + '.mp3'
+                if thumbnail:
+                    await update.message.reply_photo(photo=open(thumbnail, 'rb'), caption=caption, parse_mode='Markdown')
                 
-                # پیدا کردن کاور دانلود شده
-                thumbnail = None
-                for f in os.listdir('.'):
-                    if f.endswith(('.jpg', '.webp', '.png')) and not f.startswith('music_'):
-                        thumbnail = f; break
+                await update.message.reply_audio(audio=open(fname, 'rb'), title=title, performer=artist)
+                
+                if os.path.exists(fname): os.remove(fname)
+                if thumbnail: os.remove(thumbnail)
+                await status_msg.delete()
+            else:
+                await status_msg.edit_text("❌ خطا در دریافت فایل صوتی.")
+    except Exception as e:
+        await status_msg.edit_text(f"❌ خطا: {str(e)[:50]}")
 
-                if os.path.exists(fname):
-                    title = info.get('title', 'Unknown')
-                    artist = info.get('uploader', 'Unknown')
-                    caption = f"🎵 **Song:** {title}\n👤 **Artist:** {artist}"
-                    
-                    if thumbnail:
-                        await update.message.reply_photo(photo=open(thumbnail, 'rb'), caption=caption, parse_mode='Markdown')
-                    
-                    await update.message.reply_audio(audio=open(fname, 'rb'), title=title, performer=artist)
-                    
-                    if os.path.exists(fname): os.remove(fname)
-                    if thumbnail: os.remove(thumbnail)
-                    await status_msg.delete()
-                    return
-        except Exception as e:
-            return await status_msg.edit_text(f"❌ خطا در موزیک: {str(e)[:50]}")
-
-    # سایر منابع (اینستاگرام، تیک‌تاک، پینترست)
-    # ... (کدهای اینستاگرام و پینترست در اینجا قرار می‌گیرند)
-    await status_msg.edit_text("❌ لینک شناسایی نشد یا منبع معتبر نیست.")
-
+# --- بخش Callback برای یوتیوب ---
 async def yt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -100,7 +115,7 @@ async def yt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ffmpeg_path = get_ffmpeg_path()
 
     if action == "yt_audio":
-        await query.edit_message_text("⏳ در حال استخراج آهنگ و کاور...")
+        await query.edit_message_text("⏳ در حال دانلود آهنگ یوتیوب...")
         opts = {
             'format': 'bestaudio/best', 'outtmpl': 'yt_a.%(ext)s', 'writethumbnail': True, 'ffmpeg_location': ffmpeg_path,
             'postprocessors': [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3'}, {'key': 'FFmpegMetadata'}, {'key': 'EmbedThumbnail'}]
@@ -109,19 +124,13 @@ async def yt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 title, artist = info.get('title', 'Unknown'), info.get('uploader', 'Unknown')
-                
-                thumb = None
-                for f in os.listdir('.'):
-                    if f.endswith(('.jpg', '.webp')) and f.startswith('yt_a'): thumb = f; break
-                
-                caption = f"🎵 **Song:** {title}\n👤 **Artist:** {artist}"
-                if thumb: await query.message.reply_photo(photo=open(thumb, 'rb'), caption=caption, parse_mode='Markdown')
+                thumb = next((f for f in os.listdir('.') if f.endswith(('.jpg', '.webp')) and f.startswith('yt_a')), None)
+                if thumb: await query.message.reply_photo(photo=open(thumb, 'rb'), caption=f"🎵 **{title}**\n👤 {artist}", parse_mode='Markdown')
                 await query.message.reply_audio(audio=open('yt_a.mp3', 'rb'), title=title, performer=artist)
-                
-                if os.path.exists('yt_a.mp3'): os.remove('yt_a.mp3')
-                if thumb: os.remove(thumb)
+                for f in ['yt_a.mp3', thumb]: 
+                    if f and os.path.exists(f): os.remove(f)
                 await query.message.delete()
-        except: await query.edit_message_text("❌ خطا در استخراج صوت.")
+        except: await query.edit_message_text("❌ خطا در دانلود صوت یوتیوب.")
 
     elif action == "yt_list":
         with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
@@ -138,7 +147,7 @@ async def yt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url])
                 await query.message.reply_video(video=open('v.mp4', 'rb'))
-                os.remove('v.mp4')
+                if os.path.exists('v.mp4'): os.remove('v.mp4')
                 await query.message.delete()
         except: await query.edit_message_text("❌ خطا در دانلود ویدیو.")
 
